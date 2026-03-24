@@ -24,7 +24,7 @@ def on_key(data):
     print("\n[Sistema]: Chave pública do amigo recebida!")
 
 # 3. Conexão
-URL_SERVER = 'http://127.0.0.1:5000' # Troque pela URL do Render depois!
+URL_SERVER = 'https://projeto-de-mensagens.onrender.com' # Troque pela URL do Render depois!
 sio.connect(URL_SERVER)
 sio.emit('enviar_chave', pub_pem)
 
