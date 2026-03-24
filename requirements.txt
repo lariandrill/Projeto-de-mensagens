@@ -1,0 +1,5 @@
+flask
+flask-socketio
+rsa
+eventlet
+gunicorn
