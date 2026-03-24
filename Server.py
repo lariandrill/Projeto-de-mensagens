@@ -1,3 +1,8 @@
+import eventlet
+eventlet.monkey_patch()
+# O monkey_patch() transforma as funções padrão do Python (como as de rede e travas/RLocks) em versões "amigáveis" ao Eventlet. 
+#Se você importar o Flask antes disso, o Python carrega as funções originais e elas entram em conflito, gerando o erro de "RLock(s) were not greened".
+
 from flask import Flask
 from flask_socketio import SocketIO, emit
 
