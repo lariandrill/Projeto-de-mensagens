@@ -1,13 +1,10 @@
-import eventlet
-eventlet.monkey_patch()
-
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit
 from datetime import datetime
 import os
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Armazenar dados
 usuarios = {}
@@ -63,15 +60,10 @@ def handle_registrar_usuario(data):
         print(f'[OK] Usuario registrado: {username}')
         print(f'[INFO] Total online: {len(usuarios)}')
         
-        # Envia lista atualizada para TODOS
         lista_usuarios = [{'username': u, 'public_key': data['public_key']} for u, data in usuarios.items()]
         emit('lista_usuarios', lista_usuarios, broadcast=True)
-        print(f'[INFO] Lista enviada para todos: {lista_usuarios}')
-        
-        # Envia chave do novo usuário
         emit('chave_usuario', {'username': username, 'public_key': public_key}, broadcast=True, include_self=False)
         
-        # Verifica mensagens offline
         if username in mensagens_offline and mensagens_offline[username]:
             qtd = len(mensagens_offline[username])
             print(f'[OFFLINE] Entregando {qtd} mensagens para {username}')
@@ -87,7 +79,6 @@ def handle_registrar_usuario(data):
 def handle_solicitar_usuarios():
     lista_usuarios = [{'username': u, 'public_key': data['public_key']} for u, data in usuarios.items()]
     emit('lista_usuarios', lista_usuarios)
-    print(f'[SOLICITAR] Lista enviada: {lista_usuarios}')
 
 @socketio.on('enviar_chave')
 def handle_key(data):
@@ -107,37 +98,22 @@ def handle_message(data):
             
             if destinatario:
                 print(f'[ENTREGA] {from_user} -> {to} (ONLINE)')
-                emit('message', {
-                    'from': from_user,
-                    'content': content,
-                    'offline': False
-                }, room=destinatario['sid'])
-                
-                emit('delivery_confirmation', {
-                    'to': to,
-                    'from': from_user,
-                    'status': 'delivered'
-                }, room=request.sid)
+                emit('message', {'from': from_user, 'content': content, 'offline': False}, room=destinatario['sid'])
+                emit('delivery_confirmation', {'to': to, 'from': from_user, 'status': 'delivered'}, room=request.sid)
             else:
                 print(f'[OFFLINE] Armazenando msg de {from_user} para {to}')
                 if to not in mensagens_offline:
                     mensagens_offline[to] = []
-                mensagens_offline[to].append({
-                    'from': from_user,
-                    'content': content,
-                    'timestamp': str(datetime.now())
-                })
-                emit('delivery_confirmation', {
-                    'to': to,
-                    'from': from_user,
-                    'status': 'stored_offline'
-                }, room=request.sid)
+                mensagens_offline[to].append({'from': from_user, 'content': content, 'timestamp': str(datetime.now())})
+                emit('delivery_confirmation', {'to': to, 'from': from_user, 'status': 'stored_offline'}, room=request.sid)
     else:
         emit('message', data, broadcast=True, include_self=False)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
+    print('=' * 60)
+    print('SERVIDOR CHAT - RENDER.COM (MODO THREADING)')
+    print('=' * 60)
     print(f'[INFO] Servidor rodando na porta {port}')
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
-    # Para produção, desabilite o debug
+    print('=' * 60)
     socketio.run(app, host='0.0.0.0', port=port, debug=False)
