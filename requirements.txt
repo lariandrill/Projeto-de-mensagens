@@ -4,3 +4,4 @@ rsa==4.9
 gunicorn==21.2.0
 python-socketio==5.9.0
 python-engineio==4.9.0
+eventlet>=0.33.0
