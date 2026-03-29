@@ -11,15 +11,17 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuração otimizada para produção
+# Como deve ficar
 socketio = SocketIO(
     app, 
     cors_allowed_origins="*", 
-    async_mode='threading',
-    logger=False,  # Desativa logs detalhados do socketio
-    engineio_logger=False,  # Desativa logs do engineio
-    ping_timeout=60,  # Timeout de ping mais longo
-    ping_interval=25  # Intervalo de ping
+    async_mode='eventlet',  # <--- MUDANÇA AQUI
+    logger=False,
+    engineio_logger=False,
+    ping_timeout=60,
+    ping_interval=25
 )
+
 
 # Armazenar dados
 usuarios = {}
