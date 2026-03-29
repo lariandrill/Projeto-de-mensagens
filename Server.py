@@ -214,12 +214,11 @@ if __name__ == '__main__':
     print(f'[INFO] Status: http://0.0.0.0:{port}/status')
     print('=' * 60)
     
-    # Para produção, use estas configurações
+    # Apenas UM socketio.run (a linha duplicada foi removida)
     socketio.run(
         app, 
         host='0.0.0.0', 
         port=port, 
         debug=False,
-        use_reloader=False  # Desativa reloader em produção
+        use_reloader=False
     )
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
