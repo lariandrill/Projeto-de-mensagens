@@ -3,6 +3,7 @@ from flask_socketio import SocketIO, emit
 from datetime import datetime
 import os
 import logging
+import sqlite3
 
 # Configurar logging para melhor debug
 logging.basicConfig(level=logging.INFO)
@@ -206,6 +207,58 @@ def handle_message(data):
 def healthz():
     return 'OK', 200
 
+def init_users_db():
+    """Cria tabela de usuários no servidor (se não existir)"""
+    conn = sqlite3.connect('usuarios_servidor.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS usuarios (
+        username TEXT PRIMARY KEY,
+        password_hash TEXT NOT NULL
+    )''')
+    conn.commit()
+    conn.close()
+
+init_users_db()  # chamada única
+
+@socketio.on('registrar_usuario_credencial')
+def handle_registro_credencial(data):
+    """Recebe username + hash da senha, cria conta no banco do servidor"""
+    username = data.get('username')
+    password_hash = data.get('password_hash')
+    if not username or not password_hash:
+        emit('registro_response', {'success': False, 'message': 'Dados incompletos'}, room=request.sid)
+        return
+
+    conn = sqlite3.connect('usuarios_servidor.db')
+    c = conn.cursor()
+    try:
+        c.execute('INSERT INTO usuarios (username, password_hash) VALUES (?, ?)', (username, password_hash))
+        conn.commit()
+        emit('registro_response', {'success': True, 'message': 'Usuário criado'}, room=request.sid)
+    except sqlite3.IntegrityError:
+        emit('registro_response', {'success': False, 'message': 'Usuário já existe'}, room=request.sid)
+    finally:
+        conn.close()
+
+@socketio.on('login_usuario')
+def handle_login_credencial(data):
+    """Recebe username + hash da senha, verifica credenciais"""
+    username = data.get('username')
+    password_hash = data.get('password_hash')
+    if not username or not password_hash:
+        emit('login_response', {'success': False, 'message': 'Dados incompletos'}, room=request.sid)
+        return
+
+    conn = sqlite3.connect('usuarios_servidor.db')
+    c = conn.cursor()
+    c.execute('SELECT password_hash FROM usuarios WHERE username = ?', (username,))
+    row = c.fetchone()
+    conn.close()
+
+    if row and row[0] == password_hash:
+        emit('login_response', {'success': True, 'username': username, 'message': 'OK'}, room=request.sid)
+    else:
+        emit('login_response', {'success': False, 'message': 'Usuário ou senha incorretos'}, room=request.sid)
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print('=' * 60)
