@@ -12,21 +12,21 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuração otimizada para produção
-# Como deve ficar
 socketio = SocketIO(
     app, 
     cors_allowed_origins="*", 
-    async_mode='eventlet',  # <--- MUDANÇA AQUI
+    async_mode='eventlet',
     logger=False,
     engineio_logger=False,
     ping_timeout=60,
     ping_interval=25
 )
 
-
 # Armazenar dados
-usuarios = {}
+usuarios = {}           # username -> {'sid': sid, 'public_key': key, 'online': True}
 mensagens_offline = {}
+usuario_logado_atual = None  # Para rastrear o usuário logado em cada conexão
+sid_to_username = {}         # Mapeamento de socket_id para username
 
 @app.route('/')
 def index():
@@ -50,7 +50,6 @@ def status():
 
 @app.route('/health')
 def health():
-    """Endpoint para health check do Render"""
     return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
 
 @socketio.on('connect')
@@ -67,6 +66,9 @@ def handle_disconnect():
     
     if username_to_remove:
         del usuarios[username_to_remove]
+        # Remove do mapeamento também
+        if request.sid in sid_to_username:
+            del sid_to_username[request.sid]
         logger.info(f'[DISCONNECT] Usuario desconectado: {username_to_remove}')
         logger.info(f'[INFO] Total online: {len(usuarios)}')
         
@@ -88,7 +90,6 @@ def handle_registrar_usuario(data):
     # Verificar se usuário já está online em outra conexão
     if username in usuarios and usuarios[username].get('sid') != request.sid:
         logger.warning(f'[AVISO] Usuario {username} ja conectado em outro dispositivo')
-        # Remove conexão anterior
         old_sid = usuarios[username]['sid']
         emit('force_disconnect', {'message': 'Conectado em outro dispositivo'}, room=old_sid)
     
@@ -97,6 +98,9 @@ def handle_registrar_usuario(data):
         'public_key': public_key,
         'conectado_em': datetime.now().isoformat()
     }
+    
+    # Armazena mapeamento
+    sid_to_username[request.sid] = username
     
     logger.info(f'[OK] Usuario registrado: {username}')
     logger.info(f'[INFO] Total online: {len(usuarios)}')
@@ -128,6 +132,35 @@ def handle_solicitar_usuarios():
     lista_usuarios = [{'username': u, 'public_key': data['public_key']} for u, data in usuarios.items()]
     emit('lista_usuarios', lista_usuarios)
     logger.info(f'[SOLICITAR] Lista enviada para {request.sid}: {len(lista_usuarios)} usuarios')
+
+@socketio.on('solicitar_contatos')
+def handle_solicitar_contatos():
+    """Retorna todos os usuários cadastrados com flag online/offline"""
+    try:
+        # Obtém o username do socket atual
+        username_atual = sid_to_username.get(request.sid)
+        
+        conn = sqlite3.connect('usuarios_servidor.db')
+        c = conn.cursor()
+        c.execute('SELECT username FROM usuarios')
+        todos = [row[0] for row in c.fetchall()]
+        conn.close()
+        
+        contatos = []
+        for user in todos:
+            if user == username_atual:
+                continue
+            online = user in usuarios
+            contato = {'username': user, 'online': online}
+            if online:
+                contato['public_key'] = usuarios[user]['public_key']
+            contatos.append(contato)
+        
+        emit('lista_contatos', contatos, room=request.sid)
+        logger.info(f'[CONTATOS] Lista de {len(contatos)} contatos enviada para {username_atual}')
+    except Exception as e:
+        logger.error(f'[ERRO] Ao buscar contatos: {e}')
+        emit('lista_contatos', [], room=request.sid)
 
 @socketio.on('enviar_chave')
 def handle_key(data):
@@ -259,17 +292,17 @@ def handle_login_credencial(data):
         emit('login_response', {'success': True, 'username': username, 'message': 'OK'}, room=request.sid)
     else:
         emit('login_response', {'success': False, 'message': 'Usuário ou senha incorretos'}, room=request.sid)
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print('=' * 60)
-    print('SERVIDOR CHAT - RENDER.COM (MODO THREADING)')
+    print('SERVIDOR CHAT - RENDER.COM (COM SUPORTE A CONTATOS OFFLINE)')
     print('=' * 60)
     print(f'[INFO] Servidor rodando na porta {port}')
     print(f'[INFO] Health check: http://0.0.0.0:{port}/health')
     print(f'[INFO] Status: http://0.0.0.0:{port}/status')
     print('=' * 60)
     
-    # Apenas UM socketio.run (a linha duplicada foi removida)
     socketio.run(
         app, 
         host='0.0.0.0', 
