@@ -166,7 +166,7 @@ def handle_solicitar_contatos():
         if online:
             contato['public_key'] = usuarios_online[user]['public_key']
         else:
-            contato['public_key'] = pub_key   # útil para criptografar mensagens offline
+            contato['public_key'] = pub_key
         contatos.append(contato)
     emit('lista_contatos', contatos, room=request.sid)
     logger.info(f'[CONTATOS] Enviados {len(contatos)} contatos para {username_atual}')
@@ -218,6 +218,19 @@ def handle_message(data):
         })
         emit('delivery_confirmation', {'to': para, 'from': de, 'status': 'stored_offline'}, room=request.sid)
 
+# ==================== NOVO: EVENTO DE DIGITAÇÃO ====================
+@socketio.on('digitando')
+def handle_digitando(data):
+    """Recebe indicação de digitação e repassa ao destinatário"""
+    to = data.get('to')
+    from_user = data.get('from')
+    if to and from_user:
+        destinatario = usuarios_online.get(to)
+        if destinatario:
+            emit('digitando', {'from': from_user}, room=destinatario['sid'])
+            logger.debug(f'[DIGITANDO] {from_user} está digitando para {to}')
+
+# ==================== HISTÓRICO E MARCAÇÃO DE LIDAS ====================
 @socketio.on('solicitar_historico')
 def handle_solicitar_historico(data):
     """Cliente solicita histórico de mensagens com um contato."""
@@ -313,7 +326,7 @@ def handle_login_credencial(data):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print('=' * 60)
-    print('SERVIDOR CHAT - NEON (HISTÓRICO PERSISTENTE)')
+    print('SERVIDOR CHAT - NEON (HISTÓRICO PERSISTENTE + DIGITAÇÃO)')
     print('=' * 60)
     print(f'[INFO] Servidor rodando na porta {port}')
     socketio.run(app, host='0.0.0.0', port=port, debug=False, use_reloader=False)
