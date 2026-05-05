@@ -8,7 +8,6 @@ import os
 import logging
 import psycopg2
 from psycopg2 import IntegrityError
-import json
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -65,6 +64,7 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
+    logger.info("Banco de dados inicializado.")
 
 init_db()
 
@@ -113,39 +113,33 @@ def handle_disconnect():
         del usuarios_online[username]
         del sid_to_username[request.sid]
         logger.info(f'[DISCONNECT] {username} saiu')
-        # Notifica outros que a lista mudou
-        lista = [{'username': u, 'public_key': data['public_key']} for u, data in usuarios_online.items()]
-        emit('lista_usuarios', lista, broadcast=True)
 
 @socketio.on('registrar_usuario')
 def handle_registrar_usuario(data):
-    """Após login, o cliente registra a chave pública para ficar online"""
+    """Após login bem-sucedido, o cliente envia a chave pública para ficar online."""
     username = data.get('username')
     public_key = data.get('public_key')
     if not username or not public_key:
         return
-    # Atualiza a chave pública no banco (se não existir, insere)
+
+    # Atualiza a chave pública no banco (se o usuário existir)
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('UPDATE usuarios SET public_key = %s WHERE username = %s', (public_key, username))
     if cur.rowcount == 0:
-        cur.execute('INSERT INTO usuarios (username, password_hash, public_key) VALUES (%s, %s, %s)',
-                    (username, '', public_key))  
-        conn.rollback()  
+        logger.warning(f'Tentativa de registrar chave para usuário inexistente: {username}')
+        conn.rollback()
     else:
         conn.commit()
     cur.close()
     conn.close()
 
-    # Adiciona aos online
+    # Adiciona à lista de online
     usuarios_online[username] = {'sid': request.sid, 'public_key': public_key}
     sid_to_username[request.sid] = username
-    logger.info(f'[ONLINE] {username} registrado online')
-    # Notifica todos
-    lista = [{'username': u, 'public_key': data['public_key']} for u, data in usuarios_online.items()]
-    emit('lista_usuarios', lista, broadcast=True)
+    logger.info(f'[ONLINE] {username} registrado (chave pública atualizada)')
 
-    # Verifica mensagens offline pendentes (do próprio servidor)
+    # Verifica mensagens offline pendentes (armazenadas temporariamente no servidor)
     if username in mensagens_offline:
         for msg in mensagens_offline[username]:
             emit('message', msg, room=request.sid)
@@ -172,15 +166,14 @@ def handle_solicitar_contatos():
         if online:
             contato['public_key'] = usuarios_online[user]['public_key']
         else:
-            contato['public_key'] = pub_key  
+            contato['public_key'] = pub_key   # útil para criptografar mensagens offline
         contatos.append(contato)
     emit('lista_contatos', contatos, room=request.sid)
     logger.info(f'[CONTATOS] Enviados {len(contatos)} contatos para {username_atual}')
 
 @socketio.on('message')
 def handle_message(data):
-    """Recebe mensagem do cliente, armazena no banco e repassa ao destinatário"""
-    logger.info(f'[MENSAGEM] {data.get("from")} -> {data.get("to")}')
+    """Recebe mensagem, persiste no banco e entrega (online ou offline)."""
     de = data.get('from')
     para = data.get('to')
     conteudo = data.get('content')
@@ -188,7 +181,6 @@ def handle_message(data):
         emit('error', {'message': 'Dados incompletos'}, room=request.sid)
         return
 
-    # Salva no banco de dados
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -204,6 +196,7 @@ def handle_message(data):
         emit('error', {'message': 'Falha ao salvar mensagem'}, room=request.sid)
         return
 
+    # Tenta entregar imediatamente se destinatário estiver online
     destinatario = usuarios_online.get(para)
     if destinatario:
         emit('message', {
@@ -213,8 +206,8 @@ def handle_message(data):
             'timestamp': datetime.now().isoformat()
         }, room=destinatario['sid'])
         emit('delivery_confirmation', {'to': para, 'from': de, 'status': 'delivered'}, room=request.sid)
-
     else:
+        # Armazena temporariamente em memória para entrega futura
         if para not in mensagens_offline:
             mensagens_offline[para] = []
         mensagens_offline[para].append({
@@ -227,12 +220,12 @@ def handle_message(data):
 
 @socketio.on('solicitar_historico')
 def handle_solicitar_historico(data):
-    """Cliente solicita histórico de mensagens com um contato"""
+    """Cliente solicita histórico de mensagens com um contato."""
     usuario = sid_to_username.get(request.sid)
     contato = data.get('contato')
     if not usuario or not contato:
         return
-    # Busca no banco as últimas 100 mensagens entre os dois
+
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('''
@@ -245,7 +238,7 @@ def handle_solicitar_historico(data):
     mensagens = cur.fetchall()
     cur.close()
     conn.close()
-    # Transforma em lista de dicionários
+
     historico = []
     for de, conteudo, ts, lida, entregue in mensagens:
         historico.append({
@@ -256,11 +249,11 @@ def handle_solicitar_historico(data):
             'entregue': entregue
         })
     emit('historico_mensagens', {'contato': contato, 'mensagens': historico}, room=request.sid)
-    logger.info(f'[HISTORICO] Enviado {len(historico)} mensagens para {usuario} com {contato}')
+    logger.info(f'[HISTORICO] Enviado {len(historico)} mensagens para {usuario} sobre {contato}')
 
 @socketio.on('marcar_lida')
 def handle_marcar_lida(data):
-    """Cliente informa que leu as mensagens de um contato"""
+    """Cliente notifica que leu as mensagens de um contato."""
     usuario = sid_to_username.get(request.sid)
     contato = data.get('contato')
     if not usuario or not contato:
@@ -277,7 +270,7 @@ def handle_marcar_lida(data):
     conn.close()
     logger.info(f'[LIDA] {usuario} leu mensagens de {contato}')
 
-# ==================== AUTENTICAÇÃO (registro/login) ====================
+# ==================== AUTENTICAÇÃO (registro e login) ====================
 @socketio.on('registrar_usuario_credencial')
 def handle_registro_credencial(data):
     username = data.get('username')
@@ -320,7 +313,7 @@ def handle_login_credencial(data):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print('=' * 60)
-    print('SERVIDOR CHAT - NEON (COM HISTÓRICO PERSISTENTE)')
+    print('SERVIDOR CHAT - NEON (HISTÓRICO PERSISTENTE)')
     print('=' * 60)
     print(f'[INFO] Servidor rodando na porta {port}')
     socketio.run(app, host='0.0.0.0', port=port, debug=False, use_reloader=False)
