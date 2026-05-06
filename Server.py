@@ -1,6 +1,7 @@
 import eventlet
 eventlet.monkey_patch()
 
+from flask_socketio import SocketIO, emit, join_room
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit
 from datetime import datetime
@@ -116,10 +117,15 @@ def handle_disconnect():
 
 @socketio.on('registrar_usuario')
 def handle_registrar_usuario(data):
-    """Após login bem-sucedido, o cliente envia a chave pública para ficar online."""
     username = data.get('username')
     public_key = data.get('public_key')
-    if not username or not public_key:
+    sid = request.sid # Pega o ID da conexão atual
+
+    if username:
+        usuarios_conectados[username] = {'sid': sid, 'public_key': public_key}
+        join_room(username) 
+        logger.info(f'[SISTEMA] Usuário {username} registrado e entrou na sala própria.')
+        emit('usuarios_atualizados', list(usuarios_conectados.keys()), broadcast=True)
         return
 
     # Atualiza a chave pública no banco (se o usuário existir)
