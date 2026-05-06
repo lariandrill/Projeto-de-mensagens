@@ -1,7 +1,6 @@
 import eventlet
 eventlet.monkey_patch()
 
-from flask_socketio import SocketIO, emit, join_room
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit
 from datetime import datetime
@@ -105,7 +104,7 @@ def obter_total_usuarios():
 # ==================== EVENTOS SOCKET.IO ====================
 @socketio.on('connect')
 def handle_connect():
-    logger.info(f'[CONNECT] {request.sid}')
+    logger.info(f'[CONNECT] Cliente conectado: {request.sid}')
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -113,27 +112,22 @@ def handle_disconnect():
     if username:
         del usuarios_online[username]
         del sid_to_username[request.sid]
-        logger.info(f'[DISCONNECT] {username} saiu')
+        logger.info(f'[DISCONNECT] Usuario {username} desconectado')
 
 @socketio.on('registrar_usuario')
 def handle_registrar_usuario(data):
     username = data.get('username')
     public_key = data.get('public_key')
-    sid = request.sid # Pega o ID da conexão atual
-
-    if username:
-        usuarios_conectados[username] = {'sid': sid, 'public_key': public_key}
-        join_room(username) 
-        logger.info(f'[SISTEMA] Usuário {username} registrado e entrou na sala própria.')
-        emit('usuarios_atualizados', list(usuarios_conectados.keys()), broadcast=True)
+    if not username or not public_key:
+        logger.warning(f'[ERRO] Dados incompletos: {data}')
         return
 
-    # Atualiza a chave pública no banco (se o usuário existir)
+    # Atualiza a chave pública no banco (se o usuário já existir)
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('UPDATE usuarios SET public_key = %s WHERE username = %s', (public_key, username))
     if cur.rowcount == 0:
-        logger.warning(f'Tentativa de registrar chave para usuário inexistente: {username}')
+        logger.warning(f'Usuário {username} não encontrado no banco para atualizar chave')
         conn.rollback()
     else:
         conn.commit()
@@ -143,9 +137,9 @@ def handle_registrar_usuario(data):
     # Adiciona à lista de online
     usuarios_online[username] = {'sid': request.sid, 'public_key': public_key}
     sid_to_username[request.sid] = username
-    logger.info(f'[ONLINE] {username} registrado (chave pública atualizada)')
+    logger.info(f'[ONLINE] Usuario {username} registrado (chave pública armazenada)')
 
-    # Verifica mensagens offline pendentes (armazenadas temporariamente no servidor)
+    # Entrega mensagens offline (se houver)
     if username in mensagens_offline:
         for msg in mensagens_offline[username]:
             emit('message', msg, room=request.sid)
@@ -172,43 +166,36 @@ def handle_solicitar_contatos():
         if online:
             contato['public_key'] = usuarios_online[user]['public_key']
         else:
-            contato['public_key'] = pub_key
+            contato['public_key'] = pub_key  # chave pública do banco (para ofﬂine)
         contatos.append(contato)
     emit('lista_contatos', contatos, room=request.sid)
     logger.info(f'[CONTATOS] Enviados {len(contatos)} contatos para {username_atual}')
 
 @socketio.on('message')
 def handle_message(data):
-    """Recebe mensagem, persiste no banco e entrega (online ou offline)."""
     de = data.get('from')
     para = data.get('to')
     conteudo = data.get('content')
     if not de or not para or not conteudo:
-        emit('error', {'message': 'Dados incompletos'}, room=request.sid)
+        emit('error', {'message':'Dados incompletos'}, room=request.sid)
         return
 
+    # Salva a mensagem no banco de dados
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute('''
-            INSERT INTO mensagens (de, para, conteudo, timestamp)
-            VALUES (%s, %s, %s, %s)
-        ''', (de, para, conteudo, datetime.now()))
-        emit('receive_message', {'from': de, 'content': conteudo, 'offline': False, 'timestamp': datetime.now().isoformat()}, room=para)
+        cur.execute(
+            'INSERT INTO mensagens (de, para, conteudo, timestamp) VALUES (%s, %s, %s, %s)',
+            (de, para, conteudo, datetime.now())
+        )
         conn.commit()
         cur.close()
         conn.close()
     except Exception as e:
-        logger.error(f'Erro ao salvar mensagem no banco: {e}')
-        emit('receive_message', { 
-    'from': de,
-    'content': conteudo,
-    'offline': False,
-    'timestamp': datetime.now().isoformat()
-}, room=destinatario['sid'])
-        return
+        logger.error(f'Erro ao salvar mensagem: {e}')
+
+    # Entrega imediata ou armazena offline
     destinatario = usuarios_online.get(para)
-    
     if destinatario:
         emit('message', {
             'from': de,
@@ -216,9 +203,8 @@ def handle_message(data):
             'offline': False,
             'timestamp': datetime.now().isoformat()
         }, room=destinatario['sid'])
-        emit('delivery_confirmation', {'to': para, 'from': de, 'status': 'delivered'}, room=request.sid)
+        emit('delivery_confirmation', {'to': para, 'from': de, 'status':'delivered'}, room=request.sid)
     else:
-        # Armazena temporariamente em memória para entrega futura
         if para not in mensagens_offline:
             mensagens_offline[para] = []
         mensagens_offline[para].append({
@@ -227,12 +213,10 @@ def handle_message(data):
             'offline': True,
             'timestamp': datetime.now().isoformat()
         })
-        emit('delivery_confirmation', {'to': para, 'from': de, 'status': 'stored_offline'}, room=request.sid)
+        emit('delivery_confirmation', {'to': para, 'from': de, 'status':'stored_offline'}, room=request.sid)
 
-# ==================== NOVO: EVENTO DE DIGITAÇÃO ====================
 @socketio.on('digitando')
 def handle_digitando(data):
-    """Recebe indicação de digitação e repassa ao destinatário"""
     to = data.get('to')
     from_user = data.get('from')
     if to and from_user:
@@ -241,15 +225,12 @@ def handle_digitando(data):
             emit('digitando', {'from': from_user}, room=destinatario['sid'])
             logger.debug(f'[DIGITANDO] {from_user} está digitando para {to}')
 
-# ==================== HISTÓRICO E MARCAÇÃO DE LIDAS ====================
 @socketio.on('solicitar_historico')
 def handle_solicitar_historico(data):
-    """Cliente solicita histórico de mensagens com um contato."""
     usuario = sid_to_username.get(request.sid)
     contato = data.get('contato')
     if not usuario or not contato:
         return
-
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('''
@@ -262,7 +243,6 @@ def handle_solicitar_historico(data):
     mensagens = cur.fetchall()
     cur.close()
     conn.close()
-
     historico = []
     for de, conteudo, ts, lida, entregue in mensagens:
         historico.append({
@@ -277,7 +257,6 @@ def handle_solicitar_historico(data):
 
 @socketio.on('marcar_lida')
 def handle_marcar_lida(data):
-    """Cliente notifica que leu as mensagens de um contato."""
     usuario = sid_to_username.get(request.sid)
     contato = data.get('contato')
     if not usuario or not contato:
@@ -294,7 +273,6 @@ def handle_marcar_lida(data):
     conn.close()
     logger.info(f'[LIDA] {usuario} leu mensagens de {contato}')
 
-# ==================== AUTENTICAÇÃO (registro e login) ====================
 @socketio.on('registrar_usuario_credencial')
 def handle_registro_credencial(data):
     username = data.get('username')
