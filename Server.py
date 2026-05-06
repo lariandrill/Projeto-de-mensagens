@@ -16,7 +16,7 @@ app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet',
                     logger=False, engineio_logger=False)
 
-# ==================== BANCO DE DADOS ====================
+# ==================== CONEXÃO COM NEON (POSTGRESQL) ====================
 def get_db_connection():
     database_url = os.environ.get('DATABASE_URL')
     if not database_url:
@@ -98,7 +98,6 @@ def handle_registrar_usuario(data):
     cur = conn.cursor()
     cur.execute('UPDATE usuarios SET public_key = %s WHERE username = %s', (public_key, username))
     if cur.rowcount == 0:
-        # Se o usuário não existe no banco (não deveria acontecer, pois o cadastro já foi feito)
         logger.warning(f'Usuário {username} não encontrado no banco. Ignorando atualização de chave.')
         conn.rollback()
     else:
