@@ -38,6 +38,7 @@ config_file = "config.json"
 configuracoes = {
     "notificacoes": True,
     "confirmacao_leitura": True,
+    "som_ao_receber": False,
     "som_ao_enviar": False
 }
 
@@ -47,6 +48,8 @@ def carregar_configuracoes():
         try:
             with open(config_file, 'r') as f:
                 config = json.load(f)
+                for k, v in configuracoes.items():
+                    config.setdefault(k, v)
                 configuracoes.update(config)
         except:
             pass
@@ -393,17 +396,43 @@ def on_message(data):
                                 Clock.schedule_once(lambda dt: app.log_na_tela(f"[OFFLINE] Mensagem de {remetente} entregue", (0.5, 0.5, 0, 0.8), 'center'))
                             else:
                                 Clock.schedule_once(lambda dt: app.log_na_tela(f"[NOVA] Mensagem de {remetente}", (0.7, 0.5, 0, 0.8), 'center'))
+
+                        # --- Som de notificação (usando som do sistema) ---
+                        if configuracoes.get("som_ao_receber", False):
+                            Clock.schedule_once(lambda dt: _tocar_som_notificacao(), 0)
+
+                        # --- Notificação visual do sistema (plyer) ---
                         if NOTIFICACOES_DISPONIVEIS and (not app.root or app.root.current != 'chat'):
-                            Clock.schedule_once(lambda dt: notification.notify(
-                                title=remetente,
-                                message=msg_decifrada[:50],
-                                app_name="Psychc",
+                            Clock.schedule_once(lambda dt, u=remetente, m=msg_decifrada: notification.notify(
+                                title=u,
+                                message=m[:50],
+                                app_name="HERMES",
                                 timeout=5
                             ), 0)
                 except Exception as e:
                     print(f"[ERRO] Ao processar mensagem: {e}")
     except Exception as e:
         print(f"[ERRO] Geral na mensagem: {e}")
+
+def _tocar_som_notificacao():
+    """Toca o som de notificação padrão do sistema operacional."""
+    try:
+        import platform
+        import subprocess
+
+        sistema = platform.system()
+
+        if sistema == "Windows":
+            import winsound
+            winsound.PlaySound("SystemQuestion", winsound.SND_ALIAS)
+        elif sistema == "Darwin":   # macOS
+            subprocess.run(["afplay", "/System/Library/Sounds/Ping.aiff"])
+        elif sistema == "Linux":
+            subprocess.run(["paplay", "/usr/share/sounds/freedesktop/stereo/message.ogg"])
+        else:
+            print("[INFO] Som de notificação não disponível para este sistema.")
+    except Exception as e:
+        print(f"[ERRO] Ao tocar som de notificação do sistema: {e}")
 
 @sio.on('historico_mensagens')
 def on_historico_mensagens(data):
@@ -412,16 +441,18 @@ def on_historico_mensagens(data):
     print(f"[HISTORICO] {len(mensagens)} mensagens recebidas de {contato}")
     app = App.get_running_app()
     if app and app.root.current == 'chat' and destinatario_atual == contato:
-        chat_content = app.root.get_screen('chat').layout_principal
-        chat_content.chat_container.clear_widgets()
-        for msg in mensagens:
-            de = msg['from']
-            texto = msg['content']
-            if de == USUARIO_LOGADO:
-                chat_content.adicionar_mensagem(f"[Voce]: {texto}", 'right', (0.05, 0.4, 0.2, 1))
-            else:
-                chat_content.adicionar_mensagem(f"[{de}]: {texto}", 'left', (0.2, 0.2, 0.25, 1))
-        sio.emit('marcar_lida', {'contato': contato})
+        def adicionar_historico(dt):
+            chat_content = app.root.get_screen('chat').layout_principal
+            chat_content.chat_container.clear_widgets()
+            for msg in mensagens:
+                de = msg['from']
+                texto = msg['content']
+                if de == USUARIO_LOGADO:
+                    chat_content.adicionar_mensagem(f"[Voce]: {texto}", 'right', (0.05, 0.4, 0.2, 1))
+                else:
+                    chat_content.adicionar_mensagem(f"[{de}]: {texto}", 'left', (0.2, 0.2, 0.25, 1))
+            sio.emit('marcar_lida', {'contato': contato})
+        Clock.schedule_once(adicionar_historico, 0)
 
 @sio.on('registro_response')
 def on_registro_response(data):
@@ -554,6 +585,7 @@ class ConfiguracoesPopup(Popup):
         super().__init__(title="Configuracoes", size_hint=(0.8, 0.6), **kwargs)
         layout = BoxLayout(orientation='vertical', spacing=dp(15), padding=dp(20))
 
+        # Notificações visuais
         notif_layout = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
         notif_layout.add_widget(Label(text="Notificacoes:", size_hint_x=0.5, halign='right'))
         self.notif_check = CheckBox(active=configuracoes["notificacoes"], size_hint_x=0.1)
@@ -561,6 +593,15 @@ class ConfiguracoesPopup(Popup):
         notif_layout.add_widget(self.notif_check)
         layout.add_widget(notif_layout)
 
+        # Som ao receber
+        som_layout = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
+        som_layout.add_widget(Label(text="Som ao receber:", size_hint_x=0.5, halign='right'))
+        self.som_check = CheckBox(active=configuracoes.get("som_ao_receber", False), size_hint_x=0.1)
+        self.som_check.bind(active=self.mudar_som_receber)
+        som_layout.add_widget(self.som_check)
+        layout.add_widget(som_layout)
+
+        # Confirm. de leitura
         conf_layout = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
         conf_layout.add_widget(Label(text="Confirm. de leitura:", size_hint_x=0.5, halign='right'))
         self.conf_check = CheckBox(active=configuracoes["confirmacao_leitura"], size_hint_x=0.1)
@@ -582,6 +623,10 @@ class ConfiguracoesPopup(Popup):
 
     def mudar_notificacoes(self, instance, value):
         configuracoes["notificacoes"] = value
+        salvar_configuracoes()
+
+    def mudar_som_receber(self, instance, value):
+        configuracoes["som_ao_receber"] = value
         salvar_configuracoes()
 
     def mudar_conf_leitura(self, instance, value):
@@ -623,6 +668,7 @@ class ConfiguracoesPopup(Popup):
         popup.content = layout
         popup.open()
 
+# ---------- Menu com confirmação de limpeza de histórico ----------
 class MenuOpcoes(Popup):
     def __init__(self, chat_instance, **kwargs):
         super().__init__(title="Menu", size_hint=(0.45, 0.85), **kwargs)
@@ -648,7 +694,7 @@ class MenuOpcoes(Popup):
             btn_limpar = BotaoRedondo(text=f"LIMPAR HISTORICO COM {destinatario_atual}", 
                                       cor_fundo=(0.7, 0.5, 0, 1), 
                                       size_hint_y=None, height=dp(40), font_size='10sp')
-            btn_limpar.bind(on_release=self.limpar_historico_atual)
+            btn_limpar.bind(on_release=self.confirmar_limpar_historico)
             layout.add_widget(btn_limpar)
 
         layout.add_widget(Label(text="Nova Senha:", font_size='11sp'))
@@ -658,16 +704,6 @@ class MenuOpcoes(Popup):
         btn_p.bind(on_release=lambda x: PopupConfirmarAcao("Mudar Senha", self.executar_mudanca).open())
         layout.add_widget(self.nova_p)
         layout.add_widget(btn_p)
-
-        mudo_container = AnchorLayout(anchor_x='center', size_hint_y=None, height=dp(40))
-        mudo_lay = BoxLayout(spacing=dp(2), size_hint_x=None)
-        mudo_lay.bind(minimum_width=mudo_lay.setter('width'))
-        mudo_lay.add_widget(Label(text="Mudo", font_size='13sp', size_hint_x=None, width=dp(40)))
-        check = CheckBox(active=self.chat_ui.modo_mudo, size_hint_x=None, width=dp(30))
-        check.bind(active=self.set_mudo)
-        mudo_lay.add_widget(check)
-        mudo_container.add_widget(mudo_lay)
-        layout.add_widget(mudo_container)
 
         btn_atualizar = BotaoRedondo(text="ATUALIZAR CONTATOS", cor_fundo=(0.2,0.5,0.6,1), 
                                      size_hint_y=None, height=dp(40), font_size='10sp')
@@ -696,8 +732,28 @@ class MenuOpcoes(Popup):
 
         self.content = layout
 
-    def set_mudo(self, cb, val):
-        self.chat_ui.modo_mudo = val
+    def confirmar_limpar_historico(self, instance):
+        """Exibe um pop-up de confirmação antes de limpar o histórico."""
+        if not destinatario_atual:
+            return
+        conteudo = BoxLayout(orientation='vertical', padding=dp(15), spacing=dp(10))
+        conteudo.add_widget(Label(text=f"Tem certeza que deseja limpar\ntodo o histórico com [b]{destinatario_atual}[/b]?",
+                                  markup=True, halign='center'))
+        btn_box = BoxLayout(spacing=dp(10), size_hint_y=None, height=dp(45))
+        btn_sim = BotaoRedondo(text="SIM, LIMPAR", cor_fundo=(0.7, 0.2, 0.2, 1))
+        btn_nao = BotaoRedondo(text="CANCELAR", cor_fundo=(0.3, 0.3, 0.3, 1))
+        popup_confirm = Popup(title="Confirmar Limpeza", content=conteudo, size_hint=(0.7, 0.3))
+        btn_sim.bind(on_release=lambda x: self._executar_limpeza(popup_confirm))
+        btn_nao.bind(on_release=popup_confirm.dismiss)
+        btn_box.add_widget(btn_nao)
+        btn_box.add_widget(btn_sim)
+        conteudo.add_widget(btn_box)
+        popup_confirm.content = conteudo
+        popup_confirm.open()
+
+    def _executar_limpeza(self, popup_confirm):
+        popup_confirm.dismiss()
+        self.limpar_historico_atual(None)
 
     def limpar_historico_atual(self, instance):
         if destinatario_atual:
@@ -711,7 +767,10 @@ class MenuOpcoes(Popup):
                 conn.commit()
                 conn.close()
                 Clock.schedule_once(lambda dt: Toast(f"Historico com {destinatario_atual} limpo!", cor=(0,0.5,0,0.9)).open())
-                self.chat_ui.limpar_chat()
+                # Agora chamamos o método correto em ChatTelaContent
+                chat_screen = self.chat_ui
+                if hasattr(chat_screen, 'layout_principal') and hasattr(chat_screen.layout_principal, 'limpar_chat'):
+                    chat_screen.layout_principal.limpar_chat()
             except Exception as err:
                 Clock.schedule_once(lambda dt, e=err: Toast(f"Erro: {e}", cor=(0.7,0,0,0.9)).open())
 
@@ -757,6 +816,7 @@ class RegistroTela(Screen):
         layout.add_widget(Label(text="CRIAR CONTA", font_size='24sp', bold=True))
         self.new_u = TextInput(hint_text="Usuario", multiline=False, height=dp(55), size_hint_y=None)
         self.new_p = TextInput(hint_text="Senha", password=True, multiline=False, height=dp(55), size_hint_y=None)
+        self.confirm_p = TextInput(hint_text="Confirmar senha", password=True, multiline=False, height=dp(55), size_hint_y=None)
         btn_reg = BotaoRedondo(text="REGISTRAR", cor_fundo=(0, 0.5, 0.4, 1), height=dp(60), size_hint_y=None)
         btn_reg.bind(on_release=self.registrar)
         btn_voltar = BotaoRedondo(text="VOLTAR", cor_fundo=(0.2, 0.4, 0.6, 1), height=dp(50), size_hint_y=None)
@@ -765,6 +825,7 @@ class RegistroTela(Screen):
         btn_fechar.bind(on_release=lambda x: App.get_running_app().stop())
         layout.add_widget(self.new_u)
         layout.add_widget(self.new_p)
+        layout.add_widget(self.confirm_p)
         layout.add_widget(btn_reg)
         layout.add_widget(btn_voltar)
         layout.add_widget(btn_fechar)
@@ -777,8 +838,12 @@ class RegistroTela(Screen):
     def registrar(self, inst):
         u = self.new_u.text.strip()
         p = self.new_p.text.strip()
-        if not u or not p:
+        confirm = self.confirm_p.text.strip()
+        if not u or not p or not confirm:
             Clock.schedule_once(lambda dt: Toast("Preencha todos os campos!").open())
+            return
+        if p != confirm:
+            Clock.schedule_once(lambda dt: Toast("As senhas não coincidem!", cor=(0.7,0,0,0.9)).open())
             return
         senha_hash = gerar_hash(p)
         sio.emit('registrar_usuario_credencial', {'username': u, 'password_hash': senha_hash})
@@ -857,11 +922,11 @@ class LoginTela(Screen):
         self.status_label.bind(size=self.status_label.setter('text_size'))
         self.add_widget(self.status_label)
 
+        self.popup_offline_mostrado = False
+        self.timer_fechar = None
+
         Clock.schedule_interval(self.verificar_status_servidor, 15)
         Clock.schedule_once(lambda dt: self.verificar_status_servidor(0), 0.5)
-
-    def _update_rect(self, i, v):
-        pass
 
     def verificar_status_servidor(self, dt):
         try:
@@ -869,12 +934,19 @@ class LoginTela(Screen):
             if response.status_code == 200:
                 self.status_label.text = "Servidor online [OK]"
                 self.status_label.color = (0, 0.8, 0, 1)
+                self.popup_offline_mostrado = False
+                if hasattr(self, 'popup_offline') and self.popup_offline:
+                    self.popup_offline.dismiss()
+                if self.timer_fechar:
+                    Clock.unschedule(self.timer_fechar)
+                    self.timer_fechar = None
             else:
                 self.status_label.text = "Servidor com problemas [?]"
                 self.status_label.color = (1, 0.5, 0, 1)
         except requests.exceptions.ConnectionError:
             self.status_label.text = "Servidor dormindo [DORMINDO]\n(ate 1 minuto para ativar)"
             self.status_label.color = (1, 1, 0, 1)
+            self.exibir_popup_servidor_offline()
         except Exception:
             self.status_label.text = "Erro ao verificar servidor [ERRO]"
             self.status_label.color = (1, 0, 0, 1)
@@ -883,9 +955,41 @@ class LoginTela(Screen):
         if conectado:
             self.status_label.text = "Servidor online [OK]"
             self.status_label.color = (0, 0.8, 0, 1)
+            self.popup_offline_mostrado = False
+            if hasattr(self, 'popup_offline') and self.popup_offline:
+                self.popup_offline.dismiss()
+            if self.timer_fechar:
+                Clock.unschedule(self.timer_fechar)
+                self.timer_fechar = None
         else:
             self.status_label.text = "Servidor offline [OFF]"
             self.status_label.color = (1, 0, 0, 1)
+            self.exibir_popup_servidor_offline()
+
+    def exibir_popup_servidor_offline(self):
+        if self.popup_offline_mostrado:
+            return
+        self.popup_offline_mostrado = True
+
+        conteudo = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(15))
+        mensagem = ("O servidor está offline!\n"
+                    "Por favor, espere 10 segundos e tente abrir o app novamente.\n"
+                    "Pedimos desculpas pelo inconveniente.\n\n"
+                    "O aplicativo será fechado em 5 segundos.")
+        conteudo.add_widget(Label(text=mensagem, halign='center', valign='middle'))
+
+        self.popup_offline = Popup(title="Servidor Offline",
+                                   content=conteudo,
+                                   size_hint=(0.85, 0.35),
+                                   auto_dismiss=False)
+        self.popup_offline.open()
+
+        if self.timer_fechar:
+            Clock.unschedule(self.timer_fechar)
+        self.timer_fechar = Clock.schedule_once(self.fechar_app, 5)
+
+    def fechar_app(self, dt=None):
+        App.get_running_app().stop()
 
     def fazer_login(self, instance):
         u = self.user_in.text.strip()
@@ -904,7 +1008,6 @@ class LoginTela(Screen):
 class ChatTela(Screen):
     def __init__(self, **kwargs):
         super().__init__(name='chat', **kwargs)
-        self.modo_mudo = False
         self.layout_principal = ChatTelaContent(chat_screen=self)
         self.add_widget(self.layout_principal)
 
