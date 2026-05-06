@@ -2,7 +2,7 @@ import eventlet
 eventlet.monkey_patch()
 
 from flask import Flask, jsonify, request
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room
 from datetime import datetime
 import os
 import logging
@@ -132,7 +132,9 @@ def handle_registrar_usuario(data):
     # Adiciona à lista de online
     usuarios_online[username] = {'sid': request.sid, 'public_key': public_key}
     sid_to_username[request.sid] = username
+    join_room(username)
     logger.info(f'[ONLINE] Usuario {username} registrado')
+    join_room(username) 
 
     # Entrega mensagens offline (se houver)
     if username in mensagens_offline:
@@ -187,25 +189,21 @@ def handle_message(data):
     except Exception as e:
         logger.error(f'Erro ao salvar mensagem: {e}')
 
-    destinatario = usuarios_online.get(para)
-    if destinatario:
-        emit('message', {
-            'from': de,
-            'content': conteudo,
-            'offline': False,
-            'timestamp': datetime.now().isoformat()
-        }, room=destinatario['sid'])
-        emit('delivery_confirmation', {'to': para, 'from': de, 'status': 'delivered'}, room=request.sid)
+        cur.execute("INSERT INTO mensagens (usuario, destinatario, mensagem, tipo, timestamp) VALUES (%s, %s, %s, %s, %s)", (de, para, conteudo, 'recebida', datetime.now()))
     else:
-        if para not in mensagens_offline:
-            mensagens_offline[para] = []
-        mensagens_offline[para].append({
-            'from': de,
-            'content': conteudo,
-            'offline': True,
-            'timestamp': datetime.now().isoformat()
-        })
-        emit('delivery_confirmation', {'to': para, 'from': de, 'status': 'stored_offline'}, room=request.sid)
+        if para:
+            cur.execute("INSERT INTO mensagens (usuario, destinatario, mensagem, tipo, timestamp) VALUES (%s, %s, %s, %s, %s)", 
+                       (de, para, conteudo, 'recebida', datetime.now()))
+            conn.commit()
+
+            emit('receive_message', {
+                'from': de,
+                'content': conteudo,
+                'offline': False,
+                'timestamp': datetime.now().isoformat()
+            }, room=para)
+            
+            print(f"[LOG] Mensagem enviada de {de} para a sala {para}")
 
 @socketio.on('digitando')
 def handle_digitando(data):
