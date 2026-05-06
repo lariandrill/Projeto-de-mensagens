@@ -9,7 +9,6 @@ import logging
 import psycopg2
 from psycopg2 import IntegrityError
 
-# Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -35,10 +34,8 @@ def get_db_connection():
     return psycopg2.connect(database_url)
 
 def init_db():
-    """Cria todas as tabelas necessárias"""
     conn = get_db_connection()
     cur = conn.cursor()
-    # Tabela de usuários
     cur.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
             username TEXT PRIMARY KEY,
@@ -47,7 +44,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # Tabela de mensagens
     cur.execute('''
         CREATE TABLE IF NOT EXISTS mensagens (
             id SERIAL PRIMARY KEY,
@@ -69,11 +65,10 @@ def init_db():
 init_db()
 
 # ==================== MEMÓRIA PARA SESSÕES ONLINE ====================
-usuarios_online = {}      # username -> {'sid': sid, 'public_key': key}
-sid_to_username = {}      # sid -> username
-mensagens_offline = {}    # username -> list de mensagens (enquanto offline)
+usuarios_online = {}
+sid_to_username = {}
+mensagens_offline = {}
 
-# ==================== ROTAS HTTP ====================
 @app.route('/')
 def index():
     return jsonify({
@@ -137,7 +132,7 @@ def handle_registrar_usuario(data):
     # Adiciona à lista de online
     usuarios_online[username] = {'sid': request.sid, 'public_key': public_key}
     sid_to_username[request.sid] = username
-    logger.info(f'[ONLINE] Usuario {username} registrado (chave pública armazenada)')
+    logger.info(f'[ONLINE] Usuario {username} registrado')
 
     # Entrega mensagens offline (se houver)
     if username in mensagens_offline:
@@ -147,9 +142,9 @@ def handle_registrar_usuario(data):
 
 @socketio.on('solicitar_contatos')
 def handle_solicitar_contatos():
-    """Retorna todos os usuários cadastrados (do banco) com status online/offline"""
     username_atual = sid_to_username.get(request.sid)
     if not username_atual:
+        logger.warning('[SOLICITAR] Usuário não identificado')
         return
     conn = get_db_connection()
     cur = conn.cursor()
@@ -166,10 +161,10 @@ def handle_solicitar_contatos():
         if online:
             contato['public_key'] = usuarios_online[user]['public_key']
         else:
-            contato['public_key'] = pub_key  # chave pública do banco (para ofﬂine)
+            contato['public_key'] = pub_key
         contatos.append(contato)
     emit('lista_contatos', contatos, room=request.sid)
-    logger.info(f'[CONTATOS] Enviados {len(contatos)} contatos para {username_atual}')
+    logger.info(f'[CONTATOS] {len(contatos)} enviados para {username_atual}')
 
 @socketio.on('message')
 def handle_message(data):
@@ -177,24 +172,21 @@ def handle_message(data):
     para = data.get('to')
     conteudo = data.get('content')
     if not de or not para or not conteudo:
-        emit('error', {'message':'Dados incompletos'}, room=request.sid)
+        emit('error', {'message': 'Dados incompletos'}, room=request.sid)
         return
 
-    # Salva a mensagem no banco de dados
+    # Salvar no banco
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute(
-            'INSERT INTO mensagens (de, para, conteudo, timestamp) VALUES (%s, %s, %s, %s)',
-            (de, para, conteudo, datetime.now())
-        )
+        cur.execute('INSERT INTO mensagens (de, para, conteudo, timestamp) VALUES (%s, %s, %s, %s)',
+                    (de, para, conteudo, datetime.now()))
         conn.commit()
         cur.close()
         conn.close()
     except Exception as e:
         logger.error(f'Erro ao salvar mensagem: {e}')
 
-    # Entrega imediata ou armazena offline
     destinatario = usuarios_online.get(para)
     if destinatario:
         emit('message', {
@@ -203,7 +195,7 @@ def handle_message(data):
             'offline': False,
             'timestamp': datetime.now().isoformat()
         }, room=destinatario['sid'])
-        emit('delivery_confirmation', {'to': para, 'from': de, 'status':'delivered'}, room=request.sid)
+        emit('delivery_confirmation', {'to': para, 'from': de, 'status': 'delivered'}, room=request.sid)
     else:
         if para not in mensagens_offline:
             mensagens_offline[para] = []
@@ -213,7 +205,7 @@ def handle_message(data):
             'offline': True,
             'timestamp': datetime.now().isoformat()
         })
-        emit('delivery_confirmation', {'to': para, 'from': de, 'status':'stored_offline'}, room=request.sid)
+        emit('delivery_confirmation', {'to': para, 'from': de, 'status': 'stored_offline'}, room=request.sid)
 
 @socketio.on('digitando')
 def handle_digitando(data):
@@ -223,7 +215,6 @@ def handle_digitando(data):
         destinatario = usuarios_online.get(to)
         if destinatario:
             emit('digitando', {'from': from_user}, room=destinatario['sid'])
-            logger.debug(f'[DIGITANDO] {from_user} está digitando para {to}')
 
 @socketio.on('solicitar_historico')
 def handle_solicitar_historico(data):
@@ -253,7 +244,6 @@ def handle_solicitar_historico(data):
             'entregue': entregue
         })
     emit('historico_mensagens', {'contato': contato, 'mensagens': historico}, room=request.sid)
-    logger.info(f'[HISTORICO] Enviado {len(historico)} mensagens para {usuario} sobre {contato}')
 
 @socketio.on('marcar_lida')
 def handle_marcar_lida(data):
@@ -271,7 +261,6 @@ def handle_marcar_lida(data):
     conn.commit()
     cur.close()
     conn.close()
-    logger.info(f'[LIDA] {usuario} leu mensagens de {contato}')
 
 @socketio.on('registrar_usuario_credencial')
 def handle_registro_credencial(data):
@@ -311,11 +300,10 @@ def handle_login_credencial(data):
     else:
         emit('login_response', {'success': False, 'message': 'Usuário ou senha incorretos'}, room=request.sid)
 
-# ==================== INICIALIZAÇÃO ====================
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print('=' * 60)
-    print('SERVIDOR CHAT - NEON (HISTÓRICO PERSISTENTE + DIGITAÇÃO)')
+    print('SERVIDOR CHAT - NEON (CORRIGIDO)')
     print('=' * 60)
     print(f'[INFO] Servidor rodando na porta {port}')
     socketio.run(app, host='0.0.0.0', port=port, debug=False, use_reloader=False)
