@@ -98,6 +98,10 @@ def init_chat_db():
         lida INTEGER DEFAULT 0,
         entregue INTEGER DEFAULT 0
     )''')
+    try:
+        c.execute('ALTER TABLE mensagens ADD COLUMN entregue INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass
     c.execute('''CREATE TABLE IF NOT EXISTS ultimas_conversas (
         usuario TEXT NOT NULL,
         contato TEXT NOT NULL,
@@ -250,7 +254,7 @@ def connect():
         Clock.unschedule(tentar_conectar_loop)
     except:
         pass
-    
+
     app = App.get_running_app()
     if app and app.root:
         if 'chat' in app.root.screen_names:
@@ -261,19 +265,6 @@ def connect():
             login_screen = app.root.get_screen('login')
             if hasattr(login_screen, 'atualizar_status_socket'):
                 Clock.schedule_once(lambda dt: login_screen.atualizar_status_socket(True))
-    
-    if USUARIO_LOGADO and pub_key:
-        try:
-            pub_pem = pub_key.save_pkcs1()
-            pub_base64 = base64.b64encode(pub_pem).decode('utf-8')
-            dados_usuario = {
-                'username': USUARIO_LOGADO,
-                'public_key': pub_base64
-            }
-            print(f"[ENVIAR] Registrando usuario {USUARIO_LOGADO} no servidor...")
-            sio.emit('registrar_usuario', dados_usuario)
-        except Exception as e:
-            print(f"[ERRO] Ao registrar: {e}")
 
 @sio.event
 def connect_error(data):
@@ -402,7 +393,7 @@ def on_message(data):
                                 Clock.schedule_once(lambda dt: app.log_na_tela(f"[OFFLINE] Mensagem de {remetente} entregue", (0.5, 0.5, 0, 0.8), 'center'))
                             else:
                                 Clock.schedule_once(lambda dt: app.log_na_tela(f"[NOVA] Mensagem de {remetente}", (0.7, 0.5, 0, 0.8), 'center'))
-                        if configuracoes["notificacoes"] and NOTIFICACOES_DISPONIVEIS and (not app.root or app.root.current != 'chat'):
+                        if NOTIFICACOES_DISPONIVEIS and (not app.root or app.root.current != 'chat'):
                             Clock.schedule_once(lambda dt: notification.notify(
                                 title=remetente,
                                 message=msg_decifrada[:50],
@@ -450,14 +441,20 @@ def on_login_response(data):
         global USUARIO_LOGADO, priv_key, pub_key, chaves_amigos, usuarios_online
         USUARIO_LOGADO = data.get('username')
         print(f"[INFO] Login bem-sucedido como {USUARIO_LOGADO}")
-        (pub_key, priv_key) = rsa.newkeys(1024)
-        pub_pem = pub_key.save_pkcs1()
-        pub_base64 = base64.b64encode(pub_pem).decode('utf-8')
-        chaves_amigos = {}
-        usuarios_online = []
-        sio.emit('registrar_usuario', {'username': USUARIO_LOGADO, 'public_key': pub_base64})
-        sio.emit('solicitar_contatos')
-        Clock.schedule_once(lambda dt: setattr(App.get_running_app().root, 'current', 'chat'))
+
+        def gerar_chaves_e_registrar():
+            global priv_key, pub_key
+            print("[INFO] Gerando chaves RSA...")
+            (pub_key, priv_key) = rsa.newkeys(1024)
+            pub_pem = pub_key.save_pkcs1()
+            pub_base64 = base64.b64encode(pub_pem).decode('utf-8')
+            sio.emit('registrar_usuario', {'username': USUARIO_LOGADO, 'public_key': pub_base64})
+            time.sleep(0.5)
+            sio.emit('solicitar_contatos')
+            Clock.schedule_once(lambda dt: setattr(App.get_running_app().root, 'current', 'chat'), 1.5)
+
+        threading.Thread(target=gerar_chaves_e_registrar, daemon=True).start()
+        Clock.schedule_once(lambda dt: Toast("Preparando ambiente...", cor=(0, 0.5, 0.8, 0.9)).open())
     else:
         def update_error(dt):
             app = App.get_running_app()
@@ -495,13 +492,13 @@ class BalaoMensagem(Label):
             Color(*cor_fundo)
             self.rect = RoundedRectangle(radius=[dp(15)])
         self.bind(pos=self._update_rect, size=self._update_rect, texture_size=self._update_size)
-        
+
     def _update_size(self, *args):
         largura_max = App.get_running_app().root.width * 0.75 if App.get_running_app().root else dp(250)
         self.width = min(self.texture_size[0] + dp(30), largura_max)
         self.height = self.texture_size[1] + dp(20)
         self.text_size = (self.width - dp(30), None)
-        
+
     def _update_rect(self, *args): 
         self.rect.pos = self.pos
         self.rect.size = self.size
@@ -517,7 +514,7 @@ class Toast(Popup):
         self.bind(pos=self._update_rect, size=self._update_rect)
         self.add_widget(Label(text=mensagem, bold=True, font_size='13sp'))
         Clock.schedule_once(self.dismiss, 10)
-        
+
     def _update_rect(self, *args): 
         self.rect.pos = self.pos
         self.rect.size = self.size
@@ -554,30 +551,30 @@ class PopupConfirmarAcao(Popup):
 
 class ConfiguracoesPopup(Popup):
     def __init__(self, **kwargs):
-        super().__init__(title="Configurações", size_hint=(0.8, 0.6), **kwargs)
+        super().__init__(title="Configuracoes", size_hint=(0.8, 0.6), **kwargs)
         layout = BoxLayout(orientation='vertical', spacing=dp(15), padding=dp(20))
-        
+
         notif_layout = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
-        notif_layout.add_widget(Label(text="Notificações:", size_hint_x=0.5, halign='right'))
+        notif_layout.add_widget(Label(text="Notificacoes:", size_hint_x=0.5, halign='right'))
         self.notif_check = CheckBox(active=configuracoes["notificacoes"], size_hint_x=0.1)
         self.notif_check.bind(active=self.mudar_notificacoes)
         notif_layout.add_widget(self.notif_check)
         layout.add_widget(notif_layout)
-        
+
         conf_layout = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
         conf_layout.add_widget(Label(text="Confirm. de leitura:", size_hint_x=0.5, halign='right'))
         self.conf_check = CheckBox(active=configuracoes["confirmacao_leitura"], size_hint_x=0.1)
         self.conf_check.bind(active=self.mudar_conf_leitura)
         conf_layout.add_widget(self.conf_check)
         layout.add_widget(conf_layout)
-        
+
         pesquisa_layout = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
-        pesquisa_layout.add_widget(Label(text="Pesquisar no histórico:", size_hint_x=0.5, halign='right'))
+        pesquisa_layout.add_widget(Label(text="Pesquisar no historico:", size_hint_x=0.5, halign='right'))
         btn_pesquisar = BotaoRedondo(text="BUSCAR", cor_fundo=(0.2, 0.5, 0.6, 1), size_hint_x=0.3)
         btn_pesquisar.bind(on_release=self.abrir_pesquisa)
         pesquisa_layout.add_widget(btn_pesquisar)
         layout.add_widget(pesquisa_layout)
-        
+
         btn_fechar = BotaoRedondo(text="FECHAR", cor_fundo=(0.5, 0.2, 0.2, 1), size_hint_y=None, height=dp(50))
         btn_fechar.bind(on_release=self.dismiss)
         layout.add_widget(btn_fechar)
@@ -594,12 +591,12 @@ class ConfiguracoesPopup(Popup):
     def abrir_pesquisa(self, instance):
         self.dismiss()
         if not destinatario_atual:
-            Toast("Selecione um destinatário primeiro!").open()
+            Toast("Selecione um destinatario primeiro!").open()
             return
-        popup = Popup(title="Pesquisar no histórico", size_hint=(0.9, 0.6))
+        popup = Popup(title="Pesquisar no historico", size_hint=(0.9, 0.6))
         layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(10))
         input_pesquisa = TextInput(hint_text="Digite o termo...", multiline=False,
-                                     background_color=(0.12,0.12,0.12,1), foreground_color=(1,1,1,1))
+                                   background_color=(0.12,0.12,0.12,1), foreground_color=(1,1,1,1))
         btn_buscar = BotaoRedondo(text="BUSCAR", cor_fundo=(0.2,0.5,0.6,1), size_hint_y=None, height=dp(45))
         resultado_label = Label(text="", markup=True, size_hint_y=None)
         resultado_label.bind(texture_size=resultado_label.setter('size'))
@@ -631,6 +628,7 @@ class MenuOpcoes(Popup):
         super().__init__(title="Menu", size_hint=(0.45, 0.85), **kwargs)
         self.chat_ui = chat_instance
         layout = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(10))
+
         qtd_online = len(usuarios_online)
         nao_entregues = contar_mensagens_nao_entregues(USUARIO_LOGADO)
         total_pendentes = sum(nao_entregues.values())
@@ -642,21 +640,25 @@ class MenuOpcoes(Popup):
             if destinatario_atual in chaves_amigos:
                 status_text += " (E2EE ATIVA)"
             else:
-                status_text += " (AGUARDANDO CONEXAO)"
-        layout.add_widget(Label(text=status_text, color=(0.7, 0.7, 0.7, 1), 
+                status_text += " (AGUARDANDO CHAVE)"
+        layout.add_widget(Label(text=status_text, color=(0.7,0.7,0.7,1), 
                                 font_size='11sp', size_hint_y=None, height=dp(80)))
+
         if destinatario_atual:
             btn_limpar = BotaoRedondo(text=f"LIMPAR HISTORICO COM {destinatario_atual}", 
                                       cor_fundo=(0.7, 0.5, 0, 1), 
                                       size_hint_y=None, height=dp(40), font_size='10sp')
             btn_limpar.bind(on_release=self.limpar_historico_atual)
             layout.add_widget(btn_limpar)
+
         layout.add_widget(Label(text="Nova Senha:", font_size='11sp'))
         self.nova_p = TextInput(password=True, multiline=False, size_hint_y=None, height=dp(35))
-        btn_p = BotaoRedondo(text="MUDAR SENHA", cor_fundo=(0.1, 0.5, 0.3, 1), size_hint_y=None, height=dp(40), font_size='10sp')
+        btn_p = BotaoRedondo(text="MUDAR SENHA", cor_fundo=(0.1,0.5,0.3,1), 
+                             size_hint_y=None, height=dp(40), font_size='10sp')
         btn_p.bind(on_release=lambda x: PopupConfirmarAcao("Mudar Senha", self.executar_mudanca).open())
         layout.add_widget(self.nova_p)
         layout.add_widget(btn_p)
+
         mudo_container = AnchorLayout(anchor_x='center', size_hint_y=None, height=dp(40))
         mudo_lay = BoxLayout(spacing=dp(2), size_hint_x=None)
         mudo_lay.bind(minimum_width=mudo_lay.setter('width'))
@@ -666,22 +668,35 @@ class MenuOpcoes(Popup):
         mudo_lay.add_widget(check)
         mudo_container.add_widget(mudo_lay)
         layout.add_widget(mudo_container)
-        btn_config = BotaoRedondo(text="CONFIGURAÇÕES", cor_fundo=(0.2, 0.5, 0.6, 1), 
+
+        btn_atualizar = BotaoRedondo(text="ATUALIZAR CONTATOS", cor_fundo=(0.2,0.5,0.6,1), 
+                                     size_hint_y=None, height=dp(40), font_size='10sp')
+        btn_atualizar.bind(on_release=self.atualizar_contatos)
+        layout.add_widget(btn_atualizar)
+
+        btn_config = BotaoRedondo(text="CONFIGURACOES", cor_fundo=(0.2,0.5,0.6,1), 
                                   size_hint_y=None, height=dp(40), font_size='10sp')
         btn_config.bind(on_release=lambda x: ConfiguracoesPopup().open())
         layout.add_widget(btn_config)
-        btn_logout = BotaoRedondo(text="LOGOUT", cor_fundo=(0.2, 0.4, 0.6, 1), size_hint_y=None, height=dp(45), font_size='11sp')
+
+        btn_logout = BotaoRedondo(text="LOGOUT", cor_fundo=(0.2,0.4,0.6,1), 
+                                  size_hint_y=None, height=dp(45), font_size='11sp')
         btn_logout.bind(on_release=self.fazer_logout)
-        btn_del = BotaoRedondo(text="EXCLUIR CONTA", cor_fundo=(0.7, 0.2, 0.2, 1), size_hint_y=None, height=dp(45), font_size='11sp')
-        btn_del.bind(on_release=lambda x: PopupConfirmarAcao("Excluir Conta", self.executar_exclusao).open())
-        btn_fechar_app = BotaoRedondo(text="SAIR DO PROGRAMA", cor_fundo=(0.4, 0, 0, 1), size_hint_y=None, height=dp(45), font_size='11sp')
-        btn_fechar_app.bind(on_release=lambda x: App.get_running_app().stop())
         layout.add_widget(btn_logout)
+
+        btn_del = BotaoRedondo(text="EXCLUIR CONTA", cor_fundo=(0.7,0.2,0.2,1), 
+                               size_hint_y=None, height=dp(45), font_size='11sp')
+        btn_del.bind(on_release=lambda x: PopupConfirmarAcao("Excluir Conta", self.executar_exclusao).open())
         layout.add_widget(btn_del)
+
+        btn_fechar_app = BotaoRedondo(text="SAIR DO PROGRAMA", cor_fundo=(0.4,0,0,1), 
+                                      size_hint_y=None, height=dp(45), font_size='11sp')
+        btn_fechar_app.bind(on_release=lambda x: App.get_running_app().stop())
         layout.add_widget(btn_fechar_app)
+
         self.content = layout
 
-    def set_mudo(self, cb, val): 
+    def set_mudo(self, cb, val):
         self.chat_ui.modo_mudo = val
 
     def limpar_historico_atual(self, instance):
@@ -695,10 +710,10 @@ class MenuOpcoes(Popup):
                          (USUARIO_LOGADO, destinatario_atual))
                 conn.commit()
                 conn.close()
-                Clock.schedule_once(lambda dt: Toast(f"Historico com {destinatario_atual} limpo!", cor=(0, 0.5, 0, 0.9)).open())
+                Clock.schedule_once(lambda dt: Toast(f"Historico com {destinatario_atual} limpo!", cor=(0,0.5,0,0.9)).open())
                 self.chat_ui.limpar_chat()
-            except Exception as e:
-                Clock.schedule_once(lambda dt: Toast(f"Erro: {e}", cor=(0.7, 0, 0, 0.9)).open())
+            except Exception as err:
+                Clock.schedule_once(lambda dt, e=err: Toast(f"Erro: {e}", cor=(0.7,0,0,0.9)).open())
 
     def executar_mudanca(self):
         nova = self.nova_p.text.strip()
@@ -709,6 +724,13 @@ class MenuOpcoes(Popup):
     def executar_exclusao(self):
         Toast("Funcionalidade em desenvolvimento.", cor=(0.7,0.5,0,0.9)).open()
         self.fazer_logout(None)
+
+    def atualizar_contatos(self, instance):
+        if sio.connected:
+            sio.emit('solicitar_contatos')
+            Toast("Solicitando atualizacao...", cor=(0,0.5,0,0.9)).open()
+        else:
+            Toast("Nao conectado ao servidor.", cor=(0.7,0,0,0.9)).open()
 
     def fazer_logout(self, instance):
         self.dismiss()
@@ -747,11 +769,11 @@ class RegistroTela(Screen):
         layout.add_widget(btn_voltar)
         layout.add_widget(btn_fechar)
         self.add_widget(layout)
-        
+
     def _update_rect(self, i, v): 
         self.rect.pos = i.pos
         self.rect.size = i.size
-        
+
     def registrar(self, inst):
         u = self.new_u.text.strip()
         p = self.new_p.text.strip()
@@ -845,24 +867,24 @@ class LoginTela(Screen):
         try:
             response = requests.get(URL_RENDER, timeout=5)
             if response.status_code == 200:
-                self.status_label.text = "Servidor online ✅"
+                self.status_label.text = "Servidor online [OK]"
                 self.status_label.color = (0, 0.8, 0, 1)
             else:
-                self.status_label.text = "Servidor com problemas ⚠️"
+                self.status_label.text = "Servidor com problemas [?]"
                 self.status_label.color = (1, 0.5, 0, 1)
         except requests.exceptions.ConnectionError:
-            self.status_label.text = "Servidor dormindo 🌙\n(até 1 minuto para ativar)"
+            self.status_label.text = "Servidor dormindo [DORMINDO]\n(ate 1 minuto para ativar)"
             self.status_label.color = (1, 1, 0, 1)
         except Exception:
-            self.status_label.text = "Erro ao verificar servidor ❌"
+            self.status_label.text = "Erro ao verificar servidor [ERRO]"
             self.status_label.color = (1, 0, 0, 1)
 
     def atualizar_status_socket(self, conectado):
         if conectado:
-            self.status_label.text = "Servidor online ✅"
+            self.status_label.text = "Servidor online [OK]"
             self.status_label.color = (0, 0.8, 0, 1)
         else:
-            self.status_label.text = "Servidor offline ❌\nTentando reconectar..."
+            self.status_label.text = "Servidor offline [OFF]"
             self.status_label.color = (1, 0, 0, 1)
 
     def fazer_login(self, instance):
@@ -870,6 +892,10 @@ class LoginTela(Screen):
         p = self.pass_in.text.strip()
         if not u or not p:
             self.error_label.text = "Preencha todos os campos!"
+            return
+        if not sio.connected:
+            self.error_label.text = "Aguardando conexao com o servidor..."
+            Clock.schedule_once(lambda dt: self.fazer_login(instance), 2)
             return
         senha_hash = gerar_hash(p)
         sio.emit('login_usuario', {'username': u, 'password_hash': senha_hash})
@@ -881,7 +907,7 @@ class ChatTela(Screen):
         self.modo_mudo = False
         self.layout_principal = ChatTelaContent(chat_screen=self)
         self.add_widget(self.layout_principal)
-        
+
     def atualizar_status(self, online):
         if hasattr(self.layout_principal, 'st_text'):
             if online:
@@ -890,13 +916,13 @@ class ChatTela(Screen):
             else:
                 self.layout_principal.led_color.rgba = (1, 0, 0, 1)
                 self.layout_principal.st_text.text = "Offline"
-    
+
     def carregar_historico_conversa(self, contato):
         mensagens = carregar_historico(USUARIO_LOGADO, contato, 100)
         self.layout_principal.chat_container.clear_widgets()
         for msg, tipo, timestamp, entregue in mensagens:
             if tipo == 'enviada':
-                status = " ✓" if entregue else " ⏳"
+                status = " [ENTREGUE]" if entregue else " [PENDENTE]"
                 self.layout_principal.adicionar_mensagem(f"[Voce]{status}: {msg}", 'right', (0.05, 0.4, 0.2, 1))
             else:
                 self.layout_principal.adicionar_mensagem(f"[{contato}]: {msg}", 'left', (0.2, 0.2, 0.25, 1))
@@ -915,7 +941,7 @@ class ChatTelaContent(BoxLayout):
                                       size_hint_x=None, width=dp(95), bold=True)
         self.btn_menu.bind(on_release=self.abrir_menu)
         self.top_bar.add_widget(self.btn_menu)
-        
+
         self.status_box = BoxLayout(size_hint_x=0.4, spacing=dp(8))
         self.led_canvas = Label(size_hint=(None, None), size=(dp(15), dp(40)))
         with self.led_canvas.canvas:
@@ -926,16 +952,16 @@ class ChatTelaContent(BoxLayout):
         self.status_box.add_widget(self.led_canvas)
         self.status_box.add_widget(self.st_text)
         self.top_bar.add_widget(self.status_box)
-        
+
         self.destinatario_label = Label(text="Nenhum destinatario", size_hint_x=0.4, 
                                          color=(0.7, 0.7, 0.7, 1), font_size='12sp', shorten=True)
         self.top_bar.add_widget(self.destinatario_label)
-        
+
         self.btn_selecionar = BotaoRedondo(text="SELECIONAR", cor_fundo=(0.2, 0.4, 0.6, 1), 
                                             size_hint_x=None, width=dp(100), font_size='11sp')
         self.btn_selecionar.bind(on_release=self.mostrar_usuarios)
         self.top_bar.add_widget(self.btn_selecionar)
-        
+
         self.add_widget(self.top_bar)
 
         self.scroll = ScrollView(do_scroll_x=False)
@@ -968,7 +994,8 @@ class ChatTelaContent(BoxLayout):
     def mostrar_usuarios(self, instance):
         global todos_contatos
         if not todos_contatos:
-            Clock.schedule_once(lambda dt: Toast("Nenhum contato encontrado ainda.", cor=(0.7,0.5,0,0.9)).open())
+            Clock.schedule_once(lambda dt: Toast("Nenhum contato encontrado. Atualizando...", cor=(0.7,0.5,0,0.9)).open())
+            sio.emit('solicitar_contatos')
             return
         popup = Popup(title="Selecionar Destinatario", size_hint=(0.9, 0.7))
         layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(10))
@@ -978,9 +1005,9 @@ class ChatTelaContent(BoxLayout):
         online = [c for c in todos_contatos if c['online']]
         offline = [c for c in todos_contatos if not c['online']]
         if online:
-            lista.add_widget(Label(text="🟢 ONLINE", size_hint_y=None, height=dp(30), bold=True))
+            lista.add_widget(Label(text="[ON] ONLINE", size_hint_y=None, height=dp(30), bold=True))
             for c in online:
-                btn = BotaoRedondo(text=f"🟢 {c['username']}", cor_fundo=(0.2,0.5,0.2,1),
+                btn = BotaoRedondo(text=f"[ON] {c['username']}", cor_fundo=(0.2,0.5,0.2,1),
                                   size_hint_y=None, height=dp(45), font_size='12sp')
                 btn.bind(on_release=lambda x, u=c['username']: self.selecionar_destinatario(u, popup))
                 lista.add_widget(btn)
@@ -988,7 +1015,7 @@ class ChatTelaContent(BoxLayout):
             if online:
                 lista.add_widget(Label(text="--- OFFLINE ---", size_hint_y=None, height=dp(30)))
             for c in offline:
-                btn = BotaoRedondo(text=f"⚫ {c['username']}", cor_fundo=(0.3,0.3,0.5,1),
+                btn = BotaoRedondo(text=f"[OFF] {c['username']}", cor_fundo=(0.3,0.3,0.5,1),
                                   size_hint_y=None, height=dp(45), font_size='12sp')
                 btn.bind(on_release=lambda x, u=c['username']: self.selecionar_destinatario(u, popup))
                 lista.add_widget(btn)
@@ -1045,7 +1072,7 @@ class ChatTelaContent(BoxLayout):
             Clock.schedule_once(lambda dt: Toast("Selecione um destinatario primeiro!", cor=(0.7,0.5,0,0.9)).open())
 
     def mostrar_indicador_digitacao(self, usuario):
-        self.indicador_digitacao.text = f"{usuario} está digitando..."
+        self.indicador_digitacao.text = f"{usuario} esta digitando..."
         Clock.schedule_once(lambda dt: self.cancelar_indicador_digitacao(), 2)
 
     def cancelar_indicador_digitacao(self):
