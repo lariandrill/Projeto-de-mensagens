@@ -194,6 +194,7 @@ def handle_message(data):
             INSERT INTO mensagens (de, para, conteudo, timestamp)
             VALUES (%s, %s, %s, %s)
         ''', (de, para, conteudo, datetime.now()))
+        emit('receive_message', {'from': de, 'content': conteudo, 'offline': False, 'timestamp': datetime.now().isoformat()}, room=para)
         conn.commit()
         cur.close()
         conn.close()
