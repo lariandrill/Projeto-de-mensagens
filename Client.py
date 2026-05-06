@@ -36,7 +36,6 @@ except ImportError:
 
 config_file = "config.json"
 configuracoes = {
-    "tema": "escuro",
     "notificacoes": True,
     "confirmacao_leitura": True,
     "som_ao_enviar": False
@@ -57,14 +56,6 @@ def salvar_configuracoes():
         json.dump(configuracoes, f, indent=2)
 
 carregar_configuracoes()
-
-def aplicar_tema():
-    if configuracoes["tema"] == "claro":
-        Window.clearcolor = (0.95, 0.95, 0.95, 1)
-    else:
-        Window.clearcolor = (0.05, 0.05, 0.05, 1)
-
-aplicar_tema()
 
 URL_RENDER = "https://projeto-de-mensagens.onrender.com"
 
@@ -566,15 +557,6 @@ class ConfiguracoesPopup(Popup):
         super().__init__(title="Configurações", size_hint=(0.8, 0.6), **kwargs)
         layout = BoxLayout(orientation='vertical', spacing=dp(15), padding=dp(20))
         
-        tema_layout = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
-        tema_layout.add_widget(Label(text="Tema:", size_hint_x=0.3, halign='right'))
-        self.tema_switch = CheckBox(active=(configuracoes["tema"] == "claro"), size_hint_x=0.1)
-        self.tema_switch.bind(active=self.mudar_tema)
-        tema_layout.add_widget(self.tema_switch)
-        tema_layout.add_widget(Label(text="Claro", size_hint_x=0.2))
-        tema_layout.add_widget(Label(text="Escuro", size_hint_x=0.3))
-        layout.add_widget(tema_layout)
-        
         notif_layout = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
         notif_layout.add_widget(Label(text="Notificações:", size_hint_x=0.5, halign='right'))
         self.notif_check = CheckBox(active=configuracoes["notificacoes"], size_hint_x=0.1)
@@ -600,11 +582,6 @@ class ConfiguracoesPopup(Popup):
         btn_fechar.bind(on_release=self.dismiss)
         layout.add_widget(btn_fechar)
         self.content = layout
-
-    def mudar_tema(self, instance, value):
-        configuracoes["tema"] = "claro" if value else "escuro"
-        salvar_configuracoes()
-        aplicar_tema()
 
     def mudar_notificacoes(self, instance, value):
         configuracoes["notificacoes"] = value
@@ -1081,7 +1058,6 @@ class ChatApp(App):
         self.sm.add_widget(LoginTela())
         self.sm.add_widget(RegistroTela())
         self.sm.add_widget(ChatTela())
-        aplicar_tema()
         return self.sm
 
     def on_start(self):
