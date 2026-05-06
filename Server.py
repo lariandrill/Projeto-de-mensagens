@@ -193,11 +193,15 @@ def handle_message(data):
         conn.close()
     except Exception as e:
         logger.error(f'Erro ao salvar mensagem no banco: {e}')
-        emit('error', {'message': 'Falha ao salvar mensagem'}, room=request.sid)
+        emit('receive_message', { 
+    'from': de,
+    'content': conteudo,
+    'offline': False,
+    'timestamp': datetime.now().isoformat()
+}, room=destinatario['sid'])
         return
-
-    # Tenta entregar imediatamente se destinatário estiver online
     destinatario = usuarios_online.get(para)
+    
     if destinatario:
         emit('message', {
             'from': de,
