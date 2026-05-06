@@ -16,7 +16,6 @@ app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet',
                     logger=False, engineio_logger=False)
 
-# ==================== CONEXÃO COM NEON (POSTGRESQL) ====================
 def get_db_connection():
     database_url = os.environ.get('DATABASE_URL')
     if not database_url:
@@ -54,26 +53,41 @@ def init_db():
 
 init_db()
 
-# ==================== MEMÓRIA (SESSÕES ONLINE) ====================
-usuarios_online = {}      # username -> {'sid': sid, 'public_key': key}
+usuarios_online = {}
 sid_to_username = {}
-mensagens_offline = {}    # username -> lista de mensagens
+mensagens_offline = {}
+
+def broadcast_lista_contatos():
+    """Envia a lista atualizada de contatos para todos os usuários online."""
+    # Para cada usuário online, monta a lista de contatos específica (excluindo ele mesmo)
+    for username, data in usuarios_online.items():
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute('SELECT username, public_key FROM usuarios')
+        todos = cur.fetchall()
+        cur.close()
+        conn.close()
+        contatos = []
+        for user, pub_key in todos:
+            if user == username:
+                continue
+            online = user in usuarios_online
+            contato = {'username': user, 'online': online}
+            if online:
+                contato['public_key'] = usuarios_online[user]['public_key']
+            else:
+                contato['public_key'] = pub_key
+            contatos.append(contato)
+        socketio.emit('lista_contatos', contatos, room=data['sid'])
+        logger.info(f'[BROADCAST] Lista enviada para {username} com {len(contatos)} contatos')
 
 @app.route('/')
 def index():
     return jsonify({
         'status': 'online',
-        'usuarios_online': len(usuarios_online),
-        'lista_usuarios': list(usuarios_online.keys())
+        'usuarios_online': len(usuarios_online)
     })
 
-@app.route('/status')
-def status():
-    return jsonify({
-        'usuarios_online': list(usuarios_online.keys())
-    })
-
-# ==================== EVENTOS SOCKET.IO ====================
 @socketio.on('connect')
 def handle_connect():
     logger.info(f'[CONNECT] {request.sid}')
@@ -84,6 +98,7 @@ def handle_disconnect():
     if username:
         usuarios_online.pop(username, None)
         logger.info(f'[DISCONNECT] {username}')
+        broadcast_lista_contatos()   # Notifica todos sobre a saída
 
 @socketio.on('registrar_usuario')
 def handle_registrar_usuario(data):
@@ -93,12 +108,12 @@ def handle_registrar_usuario(data):
         logger.warning(f'[ERRO] Dados incompletos: {data}')
         return
 
-    # Salva/atualiza a chave pública no banco
+    # Atualiza chave pública no banco
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('UPDATE usuarios SET public_key = %s WHERE username = %s', (public_key, username))
     if cur.rowcount == 0:
-        logger.warning(f'Usuário {username} não encontrado no banco. Ignorando atualização de chave.')
+        logger.warning(f'Usuário {username} não encontrado no banco')
         conn.rollback()
     else:
         conn.commit()
@@ -116,21 +131,21 @@ def handle_registrar_usuario(data):
             emit('message', msg, room=request.sid)
         del mensagens_offline[username]
 
+    # Notifica todos os clientes sobre a nova lista de contatos
+    broadcast_lista_contatos()
+
 @socketio.on('solicitar_contatos')
 def handle_solicitar_contatos():
     current_user = sid_to_username.get(request.sid)
     if not current_user:
         logger.warning('[SOLICITAR] Usuário não identificado')
         return
-
-    # Busca todos os usuários do banco
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('SELECT username, public_key FROM usuarios')
     todos = cur.fetchall()
     cur.close()
     conn.close()
-
     contatos = []
     for user, pub_key in todos:
         if user == current_user:
@@ -140,11 +155,10 @@ def handle_solicitar_contatos():
         if online:
             contato['public_key'] = usuarios_online[user]['public_key']
         else:
-            contato['public_key'] = pub_key   # pode ser None
+            contato['public_key'] = pub_key
         contatos.append(contato)
-
     emit('lista_contatos', contatos, room=request.sid)
-    logger.info(f'[CONTATOS] Enviados {len(contatos)} para {current_user}')
+    logger.info(f'[SOLICITAR] Enviados {len(contatos)} para {current_user}')
 
 @socketio.on('message')
 def handle_message(data):
@@ -155,14 +169,11 @@ def handle_message(data):
         emit('error', {'message': 'Dados incompletos'}, room=request.sid)
         return
 
-    # Salva no banco de dados
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute(
-            'INSERT INTO mensagens (de, para, conteudo, timestamp) VALUES (%s, %s, %s, %s)',
-            (de, para, conteudo, datetime.now())
-        )
+        cur.execute('INSERT INTO mensagens (de, para, conteudo, timestamp) VALUES (%s, %s, %s, %s)',
+                    (de, para, conteudo, datetime.now()))
         conn.commit()
         cur.close()
         conn.close()
@@ -171,24 +182,20 @@ def handle_message(data):
         emit('delivery_confirmation', {'to': para, 'from': de, 'status': 'failed'}, room=request.sid)
         return
 
-    # Prepara pacote para o destinatário
     msg_pacote = {
         'from': de,
         'content': conteudo,
         'offline': False,
         'timestamp': datetime.now().isoformat()
     }
-
-    # Destinatário online?
     dest = usuarios_online.get(para)
     if dest:
         emit('message', msg_pacote, room=dest['sid'])
         emit('delivery_confirmation', {'to': para, 'from': de, 'status': 'delivered'}, room=request.sid)
     else:
         # Armazena offline
-        msg_offline = msg_pacote.copy()
-        msg_offline['offline'] = True
-        mensagens_offline.setdefault(para, []).append(msg_offline)
+        msg_pacote['offline'] = True
+        mensagens_offline.setdefault(para, []).append(msg_pacote)
         emit('delivery_confirmation', {'to': para, 'from': de, 'status': 'stored_offline'}, room=request.sid)
 
 @socketio.on('digitando')
@@ -206,20 +213,17 @@ def handle_solicitar_historico(data):
     contato = data.get('contato')
     if not usuario or not contato:
         return
-
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('''
         SELECT de, conteudo, timestamp, lida, entregue
         FROM mensagens
         WHERE (de = %s AND para = %s) OR (de = %s AND para = %s)
-        ORDER BY timestamp ASC
-        LIMIT 100
+        ORDER BY timestamp ASC LIMIT 100
     ''', (usuario, contato, contato, usuario))
     rows = cur.fetchall()
     cur.close()
     conn.close()
-
     historico = []
     for de, conteudo, ts, lida, entregue in rows:
         historico.append({
@@ -239,11 +243,8 @@ def handle_marcar_lida(data):
         return
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute('''
-        UPDATE mensagens
-        SET lida = TRUE
-        WHERE para = %s AND de = %s AND lida = FALSE
-    ''', (usuario, contato))
+    cur.execute('UPDATE mensagens SET lida = TRUE WHERE para = %s AND de = %s AND lida = FALSE',
+                (usuario, contato))
     conn.commit()
     cur.close()
     conn.close()
@@ -289,7 +290,6 @@ def handle_login_credencial(data):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print('=' * 60)
-    print('SERVIDOR CHAT - NEON (CORRIGIDO)')
+    print('SERVIDOR CHAT - NEON (COM BROADCAST AUTOMÁTICO)')
     print('=' * 60)
-    print(f'[INFO] Servidor rodando na porta {port}')
     socketio.run(app, host='0.0.0.0', port=port, debug=False, use_reloader=False)
